@@ -1,0 +1,72 @@
+"""Command-line entry point for bws2passwd."""
+
+import argparse
+import os
+import re
+import sys
+
+from bws2passwd.bitwarden import fetch_secrets
+from bws2passwd.passwd import format_entry
+
+
+def build_parser() -> argparse.ArgumentParser:
+    return _build_parser()
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="bws2passwd",
+        description=(
+            "Generate a Mosquitto password file from Bitwarden Secrets Manager.\n\n"
+            "The Bitwarden machine account access token must be supplied via the "
+            "BWS_ACCESS_TOKEN environment variable.\n"
+            "The Bitwarden organization ID must be supplied via the BWS_ORGANIZATION_ID environment variable."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-f",
+        "--filter",
+        required=True,
+        metavar="PATTERN",
+        help="Regular expression to filter secrets by key/name.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        metavar="FILE",
+        help="Write output to FILE instead of stdout.",
+    )
+    return parser
+
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    access_token = os.environ.get("BWS_ACCESS_TOKEN")
+    if not access_token:
+        parser.error(f"Environment variable BWS_ACCESS_TOKEN is not set.")
+    organization_id = os.environ.get("BWS_ORGANIZATION_ID")
+    if not organization_id:
+        parser.error(f"Environment variable BWS_ORGANIZATION_ID is not set.")
+
+    try:
+        re.compile(args.filter)
+    except re.error as exc:
+        parser.error(f"Invalid regular expression for --filter: {exc}")
+
+    try:
+        secrets = fetch_secrets(access_token, organization_id, args.filter)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    lines = [format_entry(key, value) for key, value in secrets]
+    output = "\n".join(lines) + ("\n" if lines else "")
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(output)
+    else:
+        sys.stdout.write(output)
