@@ -1,11 +1,13 @@
 """Tests for bws2passwd.cli — argument parsing and output routing."""
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from bws2passwd.cli import build_parser, main
+from bws2passwd.passwd import format_entry_with_salt
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -57,6 +59,21 @@ class TestArgumentParser:
         parser = build_parser()
         args = parser.parse_args(["-f", ".*", "--output", "/tmp/passwd.txt"])
         assert args.output == "/tmp/passwd.txt"
+
+    def test_input_optional(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["-f", ".*"])
+        assert args.input is None
+
+    def test_input_short_flag(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["-f", ".*", "-i", "/tmp/existing.txt"])
+        assert args.input == "/tmp/existing.txt"
+
+    def test_input_long_flag(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["-f", ".*", "--input", "/tmp/existing.txt"])
+        assert args.input == "/tmp/existing.txt"
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +143,6 @@ class TestMain:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """Each output line must match ``username:$7$...$...$...``."""
-        import re
-
         monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
         monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
         with _patch_fetch([("alice", "pw")]):
@@ -139,3 +154,126 @@ class TestMain:
             r"[^:]+:\$7\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+",
             line,
         ), f"Unexpected format: {line!r}"
+
+
+# ---------------------------------------------------------------------------
+# --input tests
+# ---------------------------------------------------------------------------
+
+_FIXED_SALT = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b"
+
+
+class TestInputFlag:
+    def test_matching_password_reuses_digest(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        existing_line = format_entry_with_salt("alice", "password1", _FIXED_SALT)
+        input_file = tmp_path / "existing.txt"
+        input_file.write_text(existing_line + "\n")
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        out_file = tmp_path / "output.txt"
+        with _patch_fetch([("alice", "password1")]):
+            with patch(
+                "sys.argv",
+                ["bws2passwd", "-f", ".*", "-i", str(input_file), "-o", str(out_file)],
+            ):
+                main()
+        output = out_file.read_text().strip()
+        assert output == existing_line
+
+    def test_changed_password_generates_new_hash(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        existing_line = format_entry_with_salt("alice", "oldpass", _FIXED_SALT)
+        input_file = tmp_path / "existing.txt"
+        input_file.write_text(existing_line + "\n")
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        out_file = tmp_path / "output.txt"
+        with _patch_fetch([("alice", "newpass")]):
+            with patch(
+                "sys.argv",
+                ["bws2passwd", "-f", ".*", "-i", str(input_file), "-o", str(out_file)],
+            ):
+                main()
+        output = out_file.read_text().strip()
+        assert output != existing_line
+        assert output.startswith("alice:$7$")
+
+    def test_extra_entries_in_input_are_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        alice_line = format_entry_with_salt("alice", "pw", _FIXED_SALT)
+        extra_line = format_entry_with_salt("eve", "evil", _FIXED_SALT)
+        input_file = tmp_path / "existing.txt"
+        input_file.write_text(alice_line + "\n" + extra_line + "\n")
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        out_file = tmp_path / "output.txt"
+        with _patch_fetch([("alice", "pw")]):
+            with patch(
+                "sys.argv",
+                ["bws2passwd", "-f", ".*", "-i", str(input_file), "-o", str(out_file)],
+            ):
+                main()
+        lines = out_file.read_text().strip().splitlines()
+        assert len(lines) == 1
+        assert lines[0] == alice_line
+
+    def test_new_secret_not_in_input_gets_new_hash(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        input_file = tmp_path / "existing.txt"
+        input_file.write_text("alice:$7$101$abc$def\n")
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        with _patch_fetch([("bob", "newpw")]):
+            with patch(
+                "sys.argv",
+                ["bws2passwd", "-f", ".*", "-i", str(input_file)],
+            ):
+                main()
+        captured = capsys.readouterr()
+        assert captured.out.startswith("bob:$7$")
+
+    def test_without_input_flag_behaviour_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        with _patch_fetch([("alice", "pw")]):
+            with patch("sys.argv", ["bws2passwd", "-f", ".*"]):
+                main()
+        captured = capsys.readouterr()
+        assert re.fullmatch(
+            r"[^:]+:\$7\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+",
+            captured.out.strip(),
+        )
+
+    def test_input_and_output_same_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``-i`` and ``-o`` may point to the same file."""
+        existing_line = format_entry_with_salt("alice", "pw", _FIXED_SALT)
+        passwd_file = tmp_path / "passwd.txt"
+        passwd_file.write_text(existing_line + "\n")
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        with _patch_fetch([("alice", "pw")]):
+            with patch(
+                "sys.argv",
+                ["bws2passwd", "-f", ".*", "-i",
+                 str(passwd_file), "-o", str(passwd_file)],
+            ):
+                main()
+        output = passwd_file.read_text().strip()
+        assert output == existing_line

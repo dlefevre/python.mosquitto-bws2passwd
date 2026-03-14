@@ -6,7 +6,12 @@ import re
 
 import pytest
 
-from bws2passwd.passwd import format_entry, format_entry_with_salt
+from bws2passwd.passwd import (
+    format_entry,
+    format_entry_with_salt,
+    parse_entries,
+    verify_password,
+)
 
 _FIXED_SALT = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b"
 _ITERATIONS = 101
@@ -91,3 +96,63 @@ class TestFormatEntry:
             r"carol:\$7\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+",
             line,
         ), f"Unexpected format: {line!r}"
+
+
+class TestVerifyPassword:
+    def test_correct_password(self) -> None:
+        line = format_entry_with_salt("alice", "secret", _FIXED_SALT)
+        digest = line.split(":", 1)[1]
+        assert verify_password("secret", digest) is True
+
+    def test_wrong_password(self) -> None:
+        line = format_entry_with_salt("alice", "secret", _FIXED_SALT)
+        digest = line.split(":", 1)[1]
+        assert verify_password("wrong", digest) is False
+
+    def test_empty_password(self) -> None:
+        line = format_entry_with_salt("alice", "", _FIXED_SALT)
+        digest = line.split(":", 1)[1]
+        assert verify_password("", digest) is True
+        assert verify_password("notempty", digest) is False
+
+    def test_invalid_digest_format(self) -> None:
+        assert verify_password("x", "not-a-valid-digest") is False
+
+    def test_with_random_salt(self) -> None:
+        line = format_entry("bob", "hunter2")
+        digest = line.split(":", 1)[1]
+        assert verify_password("hunter2", digest) is True
+        assert verify_password("hunter3", digest) is False
+
+
+class TestParseEntries:
+    def test_simple_entries(self) -> None:
+        content = "alice:$7$101$abc$def\nbob:$7$101$ghi$jkl\n"
+        result = parse_entries(content)
+        assert len(result) == 2
+        assert result["alice"] == "alice:$7$101$abc$def"
+        assert result["bob"] == "bob:$7$101$ghi$jkl"
+
+    def test_skips_blank_lines(self) -> None:
+        content = "alice:hash\n\n\nbob:hash\n"
+        result = parse_entries(content)
+        assert len(result) == 2
+
+    def test_skips_comment_lines(self) -> None:
+        content = "# This is a comment\nalice:hash\n# Another comment\n"
+        result = parse_entries(content)
+        assert len(result) == 1
+        assert "alice" in result
+
+    def test_empty_content(self) -> None:
+        assert parse_entries("") == {}
+
+    def test_only_comments_and_blanks(self) -> None:
+        content = "# comment\n\n# another\n"
+        assert parse_entries(content) == {}
+
+    def test_line_without_colon_is_skipped(self) -> None:
+        content = "malformed_line\nalice:hash\n"
+        result = parse_entries(content)
+        assert len(result) == 1
+        assert "alice" in result

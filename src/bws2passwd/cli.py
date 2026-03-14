@@ -6,7 +6,7 @@ import re
 import sys
 
 from bws2passwd.bitwarden import fetch_secrets
-from bws2passwd.passwd import format_entry
+from bws2passwd.passwd import format_entry, parse_entries, verify_password
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +37,12 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="Write output to FILE instead of stdout.",
     )
+    parser.add_argument(
+        "-i",
+        "--input",
+        metavar="FILE",
+        help="Existing password file. Unchanged passwords reuse their stored digest.",
+    )
     return parser
 
 
@@ -62,7 +68,20 @@ def main() -> None:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    lines = [format_entry(key, value) for key, value in secrets]
+    existing: dict[str, str] = {}
+    if args.input:
+        with open(args.input, encoding="utf-8") as fh:
+            existing = parse_entries(fh.read())
+
+    lines: list[str] = []
+    for key, value in secrets:
+        entry = existing.get(key)
+        if entry is not None:
+            digest = entry.split(":", 1)[1]
+            if verify_password(value, digest):
+                lines.append(entry)
+                continue
+        lines.append(format_entry(key, value))
     output = "\n".join(lines) + ("\n" if lines else "")
 
     if args.output:

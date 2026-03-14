@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import hmac
 import os
 
 _ITERATIONS: int = 101
@@ -26,3 +27,34 @@ def format_entry(username: str, password: str) -> str:
 def format_entry_with_salt(username: str, password: str, salt: bytes) -> str:
     """Deterministic variant used in tests — accepts an explicit salt."""
     return f"{username}:{_hash_password(password, salt)}"
+
+
+def verify_password(password: str, digest: str) -> bool:
+    """Check *password* against a ``$7$<iter>$<salt_b64>$<hash_b64>`` digest."""
+    parts = digest.split("$")
+    # Expected: ['', '7', '<iter>', '<salt_b64>', '<hash_b64>']
+    if len(parts) != 5 or parts[1] != "7":
+        return False
+    iterations = int(parts[2])
+    salt = base64.b64decode(parts[3])
+    stored_hash = base64.b64decode(parts[4])
+    dk = hashlib.pbkdf2_hmac(
+        "sha512", password.encode(), salt, iterations, _KEY_BYTES
+    )
+    return hmac.compare_digest(dk, stored_hash)
+
+
+def parse_entries(content: str) -> dict[str, str]:
+    """Parse a Mosquitto password file into ``{username: full_line}``.
+
+    Blank lines and lines starting with ``#`` are skipped.
+    """
+    entries: dict[str, str] = {}
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        username, _sep, _digest = stripped.partition(":")
+        if _sep:
+            entries[username] = stripped
+    return entries
