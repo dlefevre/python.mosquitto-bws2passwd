@@ -2,7 +2,7 @@
 name = "bws2passwd"
 version = "0.1.0"
 description = "Init container to generate a Mosquitto password file from Bitwarden Secrets Manager"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "bitwarden-sdk>=2.0.0",
 ]
