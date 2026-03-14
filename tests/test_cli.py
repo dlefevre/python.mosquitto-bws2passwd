@@ -75,6 +75,21 @@ class TestArgumentParser:
         args = parser.parse_args(["-f", ".*", "--input", "/tmp/existing.txt"])
         assert args.input == "/tmp/existing.txt"
 
+    def test_verbose_default_false(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["-f", ".*"])
+        assert args.verbose is False
+
+    def test_verbose_short_flag(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["-f", ".*", "-v"])
+        assert args.verbose is True
+
+    def test_verbose_long_flag(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["-f", ".*", "--verbose"])
+        assert args.verbose is True
+
 
 # ---------------------------------------------------------------------------
 # main() integration tests
@@ -277,3 +292,199 @@ class TestInputFlag:
                 main()
         output = passwd_file.read_text().strip()
         assert output == existing_line
+
+
+# ---------------------------------------------------------------------------
+# Sorting tests
+# ---------------------------------------------------------------------------
+
+
+class TestSorting:
+    def test_output_sorted_by_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        unsorted = [("charlie", "pw"), ("alice", "pw"), ("bob", "pw")]
+        with _patch_fetch(unsorted):
+            with patch("sys.argv", ["bws2passwd", "-f", ".*"]):
+                main()
+        captured = capsys.readouterr()
+        keys = [
+            line.split(":")[0]
+            for line in captured.out.strip().splitlines()
+        ]
+        assert keys == ["alice", "bob", "charlie"]
+
+
+# ---------------------------------------------------------------------------
+# --verbose tests
+# ---------------------------------------------------------------------------
+
+
+class TestVerbose:
+    def test_no_stderr_without_verbose(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        with _patch_fetch([("alice", "pw")]):
+            with patch("sys.argv", ["bws2passwd", "-f", ".*"]):
+                main()
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_added_without_input(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        with _patch_fetch([("alice", "pw")]):
+            with patch(
+                "sys.argv", ["bws2passwd", "-f", ".*", "-v"]
+            ):
+                main()
+        captured = capsys.readouterr()
+        assert "added: alice\n" in captured.err
+
+    def test_added_with_input(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        input_file = tmp_path / "existing.txt"
+        input_file.write_text("")
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        with _patch_fetch([("bob", "pw")]):
+            with patch(
+                "sys.argv",
+                ["bws2passwd", "-f", ".*", "-v",
+                 "-i", str(input_file)],
+            ):
+                main()
+        captured = capsys.readouterr()
+        assert "added: bob\n" in captured.err
+
+    def test_unchanged(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        existing_line = format_entry_with_salt(
+            "alice", "pw", _FIXED_SALT
+        )
+        input_file = tmp_path / "existing.txt"
+        input_file.write_text(existing_line + "\n")
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        with _patch_fetch([("alice", "pw")]):
+            with patch(
+                "sys.argv",
+                ["bws2passwd", "-f", ".*", "-v",
+                 "-i", str(input_file)],
+            ):
+                main()
+        captured = capsys.readouterr()
+        assert "unchanged: alice\n" in captured.err
+
+    def test_changed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        existing_line = format_entry_with_salt(
+            "alice", "old", _FIXED_SALT
+        )
+        input_file = tmp_path / "existing.txt"
+        input_file.write_text(existing_line + "\n")
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        with _patch_fetch([("alice", "new")]):
+            with patch(
+                "sys.argv",
+                ["bws2passwd", "-f", ".*", "-v",
+                 "-i", str(input_file)],
+            ):
+                main()
+        captured = capsys.readouterr()
+        assert "changed: alice\n" in captured.err
+
+    def test_dropped(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        existing_line = format_entry_with_salt(
+            "eve", "evil", _FIXED_SALT
+        )
+        input_file = tmp_path / "existing.txt"
+        input_file.write_text(existing_line + "\n")
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        with _patch_fetch([("alice", "pw")]):
+            with patch(
+                "sys.argv",
+                ["bws2passwd", "-f", ".*", "-v",
+                 "-i", str(input_file)],
+            ):
+                main()
+        captured = capsys.readouterr()
+        assert "dropped: eve\n" in captured.err
+        assert "added: alice\n" in captured.err
+
+    def test_combined_scenario(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """All four categories in a single run."""
+        unchanged = format_entry_with_salt(
+            "alice", "same", _FIXED_SALT
+        )
+        changed = format_entry_with_salt(
+            "bob", "old", _FIXED_SALT
+        )
+        dropped = format_entry_with_salt(
+            "eve", "evil", _FIXED_SALT
+        )
+        input_file = tmp_path / "existing.txt"
+        input_file.write_text(
+            "\n".join([unchanged, changed, dropped, ""])
+        )
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", _VALID_TOKEN)
+        monkeypatch.setenv("BWS_ORGANIZATION_ID", _VALID_ORG_ID)
+        secrets = [
+            ("alice", "same"),
+            ("bob", "new"),
+            ("charlie", "fresh"),
+        ]
+        with _patch_fetch(secrets):
+            with patch(
+                "sys.argv",
+                ["bws2passwd", "-f", ".*", "-v",
+                 "-i", str(input_file)],
+            ):
+                main()
+        captured = capsys.readouterr()
+        err_lines = captured.err.strip().splitlines()
+        assert "unchanged: alice" in err_lines
+        assert "changed: bob" in err_lines
+        assert "added: charlie" in err_lines
+        assert "dropped: eve" in err_lines

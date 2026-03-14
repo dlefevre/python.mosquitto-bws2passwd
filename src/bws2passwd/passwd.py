@@ -54,7 +54,7 @@ def parse_entries(content: str) -> dict[str, str]:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        username, _sep, _digest = stripped.partition(":")
+        username, _sep, _ = stripped.partition(":")
         if _sep:
             entries[username] = stripped
     return entries
